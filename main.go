@@ -1,3 +1,4 @@
+// Binary tpmtls is a simple POC of TPM-based TLS oracle.
 package main
 
 import (
@@ -45,10 +46,8 @@ func main() {
 	defer srv.Close()
 
 	conn, err := tls.Dial("tcp", srv.Addr().String(), &tls.Config{
-		Certificates:       []tls.Certificate{*crt},
 		InsecureSkipVerify: true,
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			fmt.Println("GetClientCertificate")
 			return crt, nil
 		},
 	})
