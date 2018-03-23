@@ -1,4 +1,4 @@
-// Binary tpmtls is a simple POC of TPM-based TLS oracle.
+// Binary tpmtls is a POC for TPM-based TLS.
 package main
 
 import (
@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -16,12 +15,12 @@ import (
 	"net"
 	"time"
 
+	"github.com/awly/tpmtls/tpmkey"
 	"github.com/google/go-tpm/tpm2"
-	"github.com/google/go-tpm/tpmutil"
 )
 
 func main() {
-	pk, err := loadKey()
+	pk, err := tpmkey.PrimaryECC("/dev/tpm0", tpm2.HandleOwner)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -74,59 +73,6 @@ func main() {
 		fmt.Printf("echo message wrong, got: %q\n", got)
 	}
 }
-
-type privateKey struct {
-	rwc io.ReadWriteCloser
-	h   tpmutil.Handle
-	pub *rsa.PublicKey
-}
-
-func loadKey() (*privateKey, error) {
-	rwc, err := tpmutil.OpenTPM("/dev/tpm0")
-	if err != nil {
-		return nil, err
-	}
-	public := tpm2.Public{
-		Type:       tpm2.AlgRSA,
-		NameAlg:    tpm2.AlgSHA1,
-		Attributes: tpm2.FlagSign | tpm2.FlagSensitiveDataOrigin | tpm2.FlagUserWithAuth,
-		RSAParameters: &tpm2.RSAParams{
-			Sign: &tpm2.SigScheme{
-				Alg:  tpm2.AlgRSASSA,
-				Hash: tpm2.AlgSHA256,
-			},
-			KeyBits:  2048,
-			Exponent: uint32(0x00010001),
-			Modulus:  big.NewInt(0),
-		},
-	}
-
-	h, pub, err := tpm2.CreatePrimary(rwc, tpm2.HandleOwner, tpm2.PCRSelection{}, "", "", public)
-	if err != nil {
-		rwc.Close()
-		return nil, err
-	}
-
-	return &privateKey{rwc: rwc, h: h, pub: pub}, nil
-}
-
-func (pk *privateKey) Close() {
-	if pk.rwc == nil {
-		return
-	}
-	defer pk.rwc.Close()
-	if pk.h != 0 {
-		tpm2.FlushContext(pk.rwc, pk.h)
-	}
-}
-
-func (pk *privateKey) Sign(_ io.Reader, digest []byte, _ crypto.SignerOpts) ([]byte, error) {
-	_, sig, err := tpm2.Sign(pk.rwc, pk.h, digest)
-	fmt.Printf("Sign(%x) = %x\n", digest, sig)
-	return sig, err
-}
-
-func (pk *privateKey) Public() crypto.PublicKey { return pk.pub }
 
 func createClientCert(pk crypto.Signer) (*tls.Certificate, error) {
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
@@ -203,15 +149,13 @@ func startServer() (net.Listener, error) {
 	}
 
 	go func() {
-		for {
-			conn, err := lis.Accept()
-			if err != nil {
-				fmt.Println("Accept:", err)
-				return
-			}
-			fmt.Println("Accept OK")
-			go io.Copy(conn, conn)
+		conn, err := lis.Accept()
+		if err != nil {
+			fmt.Println("Accept:", err)
+			return
 		}
+		fmt.Println("Accept OK")
+		io.Copy(conn, conn)
 	}()
 
 	return lis, nil
