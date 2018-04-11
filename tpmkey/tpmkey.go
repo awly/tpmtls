@@ -13,12 +13,13 @@ import (
 )
 
 type privateKey struct {
-	pub crypto.PublicKey
-
-	mu   *sync.Mutex
-	rwc  io.ReadWriteCloser
-	h    tpmutil.Handle
+	pub  crypto.PublicKey
 	pass string
+
+	mu     *sync.Mutex
+	rw     io.ReadWriter
+	closer io.Closer
+	h      tpmutil.Handle
 }
 
 // Private represents a TPM-connected private key. This key can be used as
@@ -27,8 +28,6 @@ type Private interface {
 	crypto.Signer
 	io.Closer
 }
-
-// TODO(awly): more universal constructor.
 
 // Primary creates an ECDSA primary key under specified hierarchy.
 //
@@ -59,22 +58,32 @@ func PrimaryECC(path string, hierarchy tpmutil.Handle) (Private, error) {
 		return nil, err
 	}
 
-	return &privateKey{rwc: rwc, h: h, pub: pub, mu: &sync.Mutex{}}, nil
+	return &privateKey{rw: rwc, closer: rwc, h: h, pub: pub, mu: &sync.Mutex{}}, nil
+}
+
+// FromHandle returns a Private implementation using a provided key handle and
+// open TPM device at rw. Calling Close on returned Private is a no-op.
+func FromHandle(rw io.ReadWriter, h tpmutil.Handle, pub crypto.PublicKey, pass string) Private {
+	return &privateKey{rw: rw, h: h, pub: pub, mu: &sync.Mutex{}, pass: pass}
 }
 
 func (pk *privateKey) Close() error {
 	pk.mu.Lock()
 	defer pk.mu.Unlock()
 
-	if pk.rwc == nil {
+	if pk.rw == nil {
 		return nil
 	}
 	if pk.h != 0 {
-		tpm2.FlushContext(pk.rwc, pk.h)
+		tpm2.FlushContext(pk.rw, pk.h)
 	}
 
-	err := pk.rwc.Close()
-	pk.rwc = nil
+	var err error
+	if pk.closer != nil {
+		err = pk.closer.Close()
+	}
+	pk.rw = nil
+	pk.closer = nil
 	return err
 }
 
@@ -86,7 +95,7 @@ func (pk *privateKey) Sign(_ io.Reader, digest []byte, _ crypto.SignerOpts) ([]b
 	pk.mu.Lock()
 	defer pk.mu.Unlock()
 
-	sig, err := tpm2.Sign(pk.rwc, pk.h, pk.pass, digest)
+	sig, err := tpm2.Sign(pk.rw, pk.h, pk.pass, digest)
 	if err != nil {
 		return nil, err
 	}
